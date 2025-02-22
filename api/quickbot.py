@@ -1,8 +1,7 @@
 import os
 import google.generativeai as genai
 import chromadb
-import pandas as pd
-from chromadb import Documents, EmbeddingFunction, Embeddings
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from nltk.corpus import wordnet
@@ -17,15 +16,6 @@ os.environ["GEMINI_API_KEY"] = "AIzaSyC--4S4iuAK_z8mTAgKsZiLHq5kMS1D_K4"
 
 # Initialize NLTK components
 lemmatizer = WordNetLemmatizer()
-
-# Load CSV File
-def load_csv(file_path):
-    try:
-        df = pd.read_csv(file_path)
-        return df.set_index('Question')['Answer'].to_dict()
-    except Exception as e:
-        print(f"Error loading CSV: {e}")
-        return {}
 
 # Define Custom Embedding Function
 class GeminiEmbeddingFunction(EmbeddingFunction):
@@ -42,9 +32,19 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
 
 # Load ChromaDB Collection
 def load_chroma_collection(path, name):
+    """
+    Loads or creates a ChromaDB collection.
+    """
     try:
         chroma_client = chromadb.PersistentClient(path=path)
-        db = chroma_client.get_collection(name=name, embedding_function=GeminiEmbeddingFunction())
+        
+        # Check if the collection exists, otherwise create it
+        try:
+            db = chroma_client.get_collection(name=name, embedding_function=GeminiEmbeddingFunction())
+        except Exception as e:
+            print(f"Collection '{name}' does not exist. Creating a new one...")
+            db = chroma_client.create_collection(name=name, embedding_function=GeminiEmbeddingFunction())
+        
         return db
     except Exception as e:
         print(f"Error loading ChromaDB: {e}")
@@ -53,7 +53,8 @@ def load_chroma_collection(path, name):
 # Generate RAG Prompt
 def make_rag_prompt(query, relevant_passage):
     escaped = relevant_passage.replace("'", "").replace('"', "").replace("\n", " ")
-    prompt = ("""You are an intelligent customer support chatbot named QuickBot, designed to assist users with inquiries about QuickReach AI’s services, pricing, onboarding process, and technical support. QuickBot operates in two modes: General Support Mode (handling FAQs about services, pricing, onboarding, and troubleshooting) and Lead Generation Mode (engaging clients, explaining value propositions, collecting inquiries, and suggesting relevant services). With a professional yet friendly tone, QuickBot enhances customer experience, ensuring efficiency and accuracy.
+    prompt = ("""You are QuickBot, an intelligent AI-powered customer support chatbot designed to assist users with inquiries about QuickReach AI’s services, pricing, onboarding process, and technical support. QuickReach AI specializes in Website Development, Brand Marketing, and AI Chatbot Integration, offering cutting-edge solutions to enhance businesses' digital presence and customer engagement. Our services include custom-built websites using Next.js, React, and Shopify, data-driven SEO strategies, Google Ads, AI-powered social media campaigns, and personalized AI chatbots for websites and WhatsApp. QuickReach AI was founded in 2024 by Udit, Aditya, and Yasir, who bring expertise in AI, e-commerce, marketing, and full-stack development. Our core values include Innovation, Client Success, and Integrity, and we are committed to delivering fast, scalable, and high-performing digital solutions. If users have questions about our services, pricing, or team, provide accurate and professional responses. For example, if asked about our co-founders, explain their roles: Udit is the CTO, specializing in website development and AI model building; Aditya is the CMO, a results-driven marketing specialist; and Yasir is the COO, with expertise in Meta Ads and data-driven advertising strategies. Additionally, if users inquire about chatbot integration, highlight our WhatsApp chatbot services using Twilio, WhatsApp Cloud API, and Dialogflow. Always maintain a professional yet friendly tone, ensuring users feel supported and informed. With a professional yet friendly tone, QuickBot enhances customer experience, ensuring efficiency and accuracy.Contact details phone number +91 8650442828 email id quickreach.ai@gmail.com We're available 24/7 to assist you. Don't hesitate to reach out!
+    QUERY: '{query}'
     
     QUESTION: '{query}'
     PASSAGE: '{relevant_passage}'
@@ -118,24 +119,9 @@ def expand_query_with_synonyms(query):
     expanded_query = query + " " + " ".join(synonyms)
     return expanded_query
 
-# Check CSV for Exact or Synonym-Based Match
-def check_csv_for_answer(query, csv_data):
-    processed_query = preprocess_query(query)
-    
-    if processed_query in csv_data:
-        return csv_data[processed_query]
-    
-    expanded_query = expand_query_with_synonyms(processed_query)
-    for word in expanded_query.split():
-        if word in csv_data:
-            return csv_data[word]
-    
-    return None
-
 # Handle General Questions Using Gemini
 def handle_general_question(query):
-    prompt = f"""You are an intelligent customer support chatbot named QuickBot, designed to assist users with inquiries about QuickReach AI’s services, pricing, onboarding process, and technical support. QuickBot operates in two modes: General Support Mode (handling FAQs about services, pricing, onboarding, and troubleshooting) and Lead Generation Mode (engaging clients, explaining value propositions, collecting inquiries, and suggesting relevant services). With a professional yet friendly tone, QuickBot enhances customer experience, ensuring efficiency and accuracy. Respond to the following query in a conversational tone:
-    
+    prompt = f"""You are QuickBot, an intelligent AI-powered customer support chatbot designed to assist users with inquiries about QuickReach AI’s services, pricing, onboarding process, and technical support. QuickReach AI specializes in Website Development, Brand Marketing, and AI Chatbot Integration, offering cutting-edge solutions to enhance businesses' digital presence and customer engagement. Our services include custom-built websites using Next.js, React, and Shopify, data-driven SEO strategies, Google Ads, AI-powered social media campaigns, and personalized AI chatbots for websites and WhatsApp. QuickReach AI was founded in 2024 by Udit, Aditya, and Yasir, who bring expertise in AI, e-commerce, marketing, and full-stack development. Our core values include Innovation, Client Success, and Integrity, and we are committed to delivering fast, scalable, and high-performing digital solutions. If users have questions about our services, pricing, or team, provide accurate and professional responses. For example, if asked about our co-founders, explain their roles: Udit is the CTO, specializing in website development and AI model building; Aditya is the CMO, a results-driven marketing specialist; and Yasir is the COO, with expertise in Meta Ads and data-driven advertising strategies. Additionally, if users inquire about chatbot integration, highlight our WhatsApp chatbot services using Twilio, WhatsApp Cloud API, and Dialogflow. Always maintain a professional yet friendly tone, ensuring users feel supported and informed. With a professional yet friendly tone, QuickBot enhances customer experience, ensuring efficiency and accuracy. Contact details phone number +91 8650442828 email id quickreach.ai@gmail.com We're available 24/7 to assist you. Don't hesitate to reach out!
     QUERY: '{query}'
     
     RESPONSE:
@@ -143,24 +129,21 @@ def handle_general_question(query):
     return generate_answer_api(prompt)
 
 # Generate Final Answer
-def generate_answer(db, query, csv_data):
-    csv_answer = check_csv_for_answer(query, csv_data)
-    if csv_answer:
-        return csv_answer
-    
+def generate_answer(db, query):
+    # Retrieve relevant passage from ChromaDB
     relevant_text = get_relevant_passage(query, db, n_results=5)
     if relevant_text:
         prompt = make_rag_prompt(query, relevant_passage=" ".join(relevant_text))
         return generate_answer_api(prompt)
     
+    # If no relevant passage, handle as a general question
     return handle_general_question(query)
 
-# Load ChromaDB and CSV at Startup
+# Load ChromaDB at Startup
 db = load_chroma_collection(
-    path="C:/Users/LENOVO/OneDrive/Desktop/QuickReach/api/chroma_database_quickbot",
+    path="./chroma_database_quickbot",  # Use a relative path
     name="reviews_collection"
 )
-csv_data = load_csv("C:/Users/LENOVO/OneDrive/Desktop/QuickReach/api/quickbot_faq_updated.csv")
 
 # Initialize Flask App
 app = Flask(__name__)
@@ -177,10 +160,10 @@ def get_answer():
         return jsonify({"error": "Missing 'question' parameter"}), 400
 
     question = data["question"]
-    answer = generate_answer(db, question, csv_data)
+    answer = generate_answer(db, question)
     
     return jsonify({"answer": answer})
 
 # Run Flask App
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=4000)
